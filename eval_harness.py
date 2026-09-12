@@ -23,7 +23,7 @@ from dotenv import load_dotenv
 
 load_dotenv()  # reads ANTHROPIC_API_KEY from .env
 
-from review_agent import review_pr  # noqa: E402
+from review_agent import review_pr, _is_denied_path  # noqa: E402
 
 SEVERITY_RANK = {"nit": 0, "suggestion": 1, "warning": 2, "bug": 3}
 
@@ -43,6 +43,15 @@ class Case:
     files: list[dict]
     expected: list[Expected] = field(default_factory=list)
     should_be_clean: bool = False  # True = agent should raise no bug/warning findings at all
+    repo_files: dict[str, str] | None = None  # other files read_file can fetch, keyed by path
+
+
+def _make_read_file(repo_files: dict[str, str]):
+    def read_file(path: str) -> str:
+        if path not in repo_files:
+            raise FileNotFoundError(f"no such file in this fixture: {path}")
+        return repo_files[path]
+    return read_file
 
 
 CASES = [
@@ -178,14 +187,15 @@ CASES = [
     ),
     Case(
         # The bug is only fully verifiable by reading a SECOND file this diff doesn't
-        # touch: user_can_access() (defined in permissions.py, not shown here) expects
-        # a resource with an .owner_id attribute, but the caller now passes doc.owner
-        # (a user object) instead of doc itself. Turns out the model doesn't need
-        # read_file to get suspicious -- it correctly hedges ("unless user_can_access
-        # was specifically refactored to take an owner, this could introduce a
-        # permission bypass") from the argument-type change alone. What it can't do
-        # without read_file is turn that hedge into a confirmed answer -- that's the
-        # actual motivation for wiring it up, not blindness to the issue existing.
+        # touch: user_can_access() (defined in permissions.py, provided below via
+        # repo_files -- NOT part of this PR's diff) expects a resource with an
+        # .owner_id attribute, but the caller now passes doc.owner (a user object)
+        # instead of doc itself. Without read_file the model still gets suspicious and
+        # hedges from the argument-type change alone ("unless user_can_access was
+        # specifically refactored..."). With read_file now able to fetch files outside
+        # the diff (see review_agent.py's deny-list, not allow-list, policy), it should
+        # turn that hedge into a confirmed, specific answer -- expecting `bug` severity
+        # here, not just `warning`.
         name="cross_file_ownership_type_mismatch",
         files=[{
             "filename": "app/views.py",
@@ -202,7 +212,13 @@ CASES = [
                 "     return doc\n"
             ),
         }],
-        expected=[Expected(file="app/views.py", line=5, keyword="owner", line_tolerance=2)],
+        repo_files={
+            "app/permissions.py": (
+                "def user_can_access(user, resource):\n"
+                "    return resource.owner_id == user.id\n"
+            ),
+        },
+        expected=[Expected(file="app/views.py", line=5, keyword="owner", min_severity="bug", line_tolerance=2)],
     ),
     Case(
         # Unlike cross_file_ownership_type_mismatch, there is NO visible red flag in
@@ -306,14 +322,31 @@ def _matches(comment: dict, exp: Expected) -> bool:
     )
 
 
+def _check_denylist() -> bool:
+    """Direct, non-LLM check of the read_file security boundary -- no API calls."""
+    denied = [".env", "app/.env.production", "id_rsa", "config/secrets.yml", ".ssh/id_ed25519", "aws/credentials.pem"]
+    allowed = ["app/views.py", "app/permissions.py", "src/main.py", "README.md"]
+    failures = [p for p in denied if not _is_denied_path(p)]
+    failures += [p for p in allowed if _is_denied_path(p)]
+    if failures:
+        print(f"[FAIL] read_file denylist -- misclassified: {failures}")
+        return False
+    print("[PASS] read_file denylist -- sensitive paths blocked, normal paths allowed")
+    return True
+
+
 def run() -> None:
+    _check_denylist()
+    print()
+
     total_expected = 0
     total_caught = 0
     clean_cases = [c for c in CASES if c.should_be_clean]
     false_positive_cases = 0
 
     for case in CASES:
-        result = review_pr(case.files)
+        read_file = _make_read_file(case.repo_files) if case.repo_files else None
+        result = review_pr(case.files, read_file=read_file)
         comments = result.get("comments", [])
 
         if case.should_be_clean:
