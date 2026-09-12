@@ -171,4 +171,26 @@ Real PR, real GitHub API calls, real posted review: [megbala/tqdm#1](https://git
 
 ## AI tools used
 
-<!-- Fill in: which parts you had Claude/Copilot/etc. scaffold vs. wrote yourself. -->
+Built with Claude Code. Initial architecture decisions were mine -- GitHub Actions
+over a hosted webhook (no infra to run), forced tool-use for structured output,
+comment-only reviews so a human still makes the merge call. Claude scaffolded the
+actual skeleton from there (`main.py`, `review_agent.py`, `github_client.py`,
+`prompts.py`, the Actions workflow, `local_test.py`) in one pass, everything
+afterwards was iterative.
+
+Most of the real engineering happened in the eval harness. Claude's first pass at
+"hard" test cases wasn't actually hard -- the model caught an N+1 query, a silent
+output-format change, and a race condition on the first try. I rejected that batch as
+too easy and pushed for cases that would actually require reasoning instead of
+pattern-matching. Running the harness also turned up a bug: a diff with a
+live-secret-shaped string reliably made the model return malformed structured output
+instead of valid JSON. Adding an explicit instruction telling the model never to emit
+tool-call syntax inside a field's value fixed it -- 5/5 clean runs afterward, versus
+3/3 failures before.
+
+Afterwards, I began implementing the `read_file` tool use. Claude's first version only
+let the model fetch files already in the PR's diff, which was a sensible default for
+security, but I asked what happens when the actual bug depends on a file the diff
+never touches -- building a deny-list version that handles it properly. I validated
+it against a real fork of `tqdm` with a genuinely planted bug instead of stopping at
+a synthetic fixture.
