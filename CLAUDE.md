@@ -32,16 +32,21 @@ inline comments).
   real reasoning with zero visible red flags in the diff.
 - **`read_file` is now wired into a real multi-turn tool-use loop** (`review_pr()` in
   `src/review_agent.py`, capped at `MAX_READ_FILE_CALLS = 4` to guarantee termination).
-  Deliberately restricted to paths already in the PR's diff (not arbitrary repo files)
-  as a defense against a malicious diff turning the tool into an arbitrary-file-read
-  primitive via prompt injection. Validated three ways: (1) synthetic same-file
-  distant-usage bug, locally, with a fake read_file; (2) a real fork of `tqdm/tqdm`
-  (`megbala/tqdm`) with a genuine one-line attribute rename planted in `tqdm/std.py`
-  (`self.total` → `self.total_count`, breaking `__bool__`/`__len__`/`format_dict`/
-  `reset` elsewhere in the file) — real PR at `megbala/tqdm#1`, reviewed via the real
-  GitHub API, review posted for real. Before `read_file`: model hedges based on
-  (probably memorized) general knowledge of tqdm's internals. After: confirmed,
-  specific, cites the actual broken methods by name.
+  Can fetch **any file in the repo**, gated by `DENIED_PATH_PATTERNS` (a deny-list —
+  `.env`, credentials, private keys, `.ssh/`, `.git/`, etc.) rather than an allow-list
+  restricted to diff paths — that was the initial version, deliberately loosened once
+  the diff-only restriction turned out to block legitimate cross-file investigation
+  (e.g. reading a permissions helper a PR relies on but doesn't touch). Validated: (1)
+  synthetic same-file distant-usage bug, locally, with a fake read_file; (2) a real
+  fork of `tqdm/tqdm` (`megbala/tqdm`) with a genuine one-line attribute rename planted
+  in `tqdm/std.py` (`self.total` → `self.total_count`, breaking `__bool__`/`__len__`/
+  `format_dict`/`reset` elsewhere in the file) — real PR at `megbala/tqdm#1`, reviewed
+  via the real GitHub API, review posted for real; (3) `eval_harness.py`'s
+  `cross_file_ownership_type_mismatch` case now actually supplies a second file
+  (`app/permissions.py`) that is NOT part of the diff via `repo_files`, and the model
+  correctly fetches it and cites its exact implementation. Before `read_file` in all
+  three: model hedges from general/memorized knowledge. After: confirmed, specific,
+  cites the actual broken code by name.
 - Aside worth remembering: under `tool_choice: {"type": "auto"}` (which the read_file
   loop uses while budget remains), the model spontaneously emits a `thinking` content
   block even without the `thinking` API parameter being set. Not visible under the
@@ -52,15 +57,23 @@ inline comments).
 2. ~~Test `src/github_client.py` directly against a real PR; confirm `ANTHROPIC_API_KEY`
    secret is set; open a real PR and confirm the workflow runs end-to-end.~~ Done.
 3. ~~Decide on read_file wiring.~~ Done — built, tested, validated against a real fork.
-4. Comment deduplication across repeated pushes — still open, not started.
+4. ~~Decide whether to extend read_file beyond diff-only files.~~ Done — switched to a
+   deny-list policy, see above.
+5. Comment deduplication across repeated pushes — still open, not started.
 
 ## Not yet built (flag these, don't just build them unprompted)
 - Comment deduplication across repeated pushes to the same PR — not yet built,
   discussed as a possible next step, not yet started.
-- `read_file` is restricted to files already in the diff (see above) — extending it to
-  fetch genuinely separate files (e.g. a permissions helper defined elsewhere) is an
-  open decision, not yet made, and would need a safety story (allow/deny-listing
-  sensitive paths) before being safe to build.
+- `read_file` has no search/discovery capability — it can fetch any named path, but
+  can't find a relevant file it doesn't already know the name of (e.g. in a huge
+  codebase with no obvious import/reference pointing at it). Would need a repo-wide
+  code search tool, a genuinely bigger feature than "read one more file" — flagged as
+  an open idea, not started.
+- Token/cost tracking not yet added to `eval_harness.py` -- no visibility into how much
+  more a read_file-enabled review costs vs. a single-call one. Discussed, not started.
+- No size guard on `read_file` -- `github_client.read_file()` returns a file's full
+  content unconditionally; a very large file would dump a lot of tokens into the
+  conversation. Discussed, not started.
 
 ## Known model bug found via eval_harness.py (mitigated, not eliminated)
 When a diff contained a string shaped like a live secret (e.g. `sk_live_...`), the

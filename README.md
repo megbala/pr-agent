@@ -74,12 +74,15 @@ by an evaluation script that feeds it synthetic test cases instead of live PRs.
   is always `COMMENT` — a human still makes the actual merge decision.
 - **The core review function takes no GitHub API calls.** Keeps it testable in
   isolation and reusable if an eval harness gets built later.
-- **`read_file` can only fetch files already in the PR's diff, not arbitrary repo
-  files.** A tool that let a PR's own diff content direct the agent to fetch and echo
-  back *any* file would be a prompt-injection risk (e.g. a malicious PR trying to get
-  `.env` or other secrets read back into a public comment). Restricting it to files
-  the PR already touches means it can only ever get *more* context on something
-  already visible, not go on a fishing expedition.
+- **`read_file` can fetch any file in the repo, gated by a deny-list, not an
+  allow-list.** Earlier it only allowed files already in the PR's diff; that was safe
+  but couldn't help with a bug that depends on a genuinely separate file (e.g. a
+  permissions helper the diff doesn't touch). It's now open to any path, with obviously
+  sensitive patterns blocked (`.env`, credentials, private keys, `.ssh/`, `.git/`,
+  etc. -- see `DENIED_PATH_PATTERNS` in `review_agent.py`) as a defense against a
+  malicious diff using the agent as an arbitrary-file-read/exfiltration primitive.
+  This is a partial safety net, not a complete one: a file with an innocuous name that
+  happens to contain a secret isn't caught by a filename-based deny-list.
 
 ## Known limitations
 
@@ -93,10 +96,12 @@ by an evaluation script that feeds it synthetic test cases instead of live PRs.
   gives a read-only `GITHUB_TOKEN` for PRs from forks, which would prevent posting
   comments on external contributions to this repo. Not an issue for the demo (PRs are
   opened within the same repo), but worth knowing for real-world use.
-- **`read_file` is scoped to files already in the diff** (see Key decisions above) --
-  it can't fetch a genuinely separate file the PR never touched (e.g. a permissions
-  helper defined elsewhere). Extending that safely would need an allow/deny-list for
-  sensitive paths, not just "open it up."
+- **`read_file` has no way to *discover* a relevant file it doesn't already know the
+  name of.** It can fetch any path once named (e.g. from an import statement in the
+  diff), but in a large codebase where the relevant file isn't obviously named
+  anywhere in the diff, there's no search/grep tool to help it find where to look. That
+  would be a genuinely different (bigger) feature -- a repo-wide code search tool, not
+  just "let it read one more file."
 - **Occasional malformed structured output, not fully eliminated.** A diff containing
   a string shaped like a live secret (e.g. `sk_live_...`) used to *reliably* make the
   model emit stray `<parameter name="...">` tool-call syntax instead of valid JSON for
@@ -124,10 +129,15 @@ python eval_harness.py
 Cases range from obvious (SQL injection, unclosed file handle, division by zero,
 hardcoded secret, bare `except`) to deliberately hard -- requiring real reasoning
 rather than keyword-spotting: an N+1 query hidden in a loop, a mutable default
-argument, a cross-file argument-type mismatch, a silent output-format contract break,
-and a non-atomic race condition on a shared counter. Current score: **10/10 planted
-bugs caught, 0/2 false positives** on genuinely clean diffs. Re-run this after any
-change to `prompts.py` or `review_agent.py` to check whether review quality moved.
+argument, a silent output-format contract break, and a non-atomic race condition on a
+shared counter. One case (`cross_file_ownership_type_mismatch`) supplies a second file
+via `read_file` that genuinely isn't part of the diff, exercising the same
+outside-the-diff fetch used in the real `tqdm` demo below -- expects a confirmed `bug`
+finding, not just a hedge, since `read_file` can now settle it. There's also a fast,
+non-LLM check of the `read_file` deny-list itself (no API calls). Current score:
+**10/10 planted bugs caught, 0/2 false positives** on genuinely clean diffs. Re-run
+this after any change to `prompts.py` or `review_agent.py` to check whether review
+quality moved.
 
 ## Demo: read_file against a real repo
 
