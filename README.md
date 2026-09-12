@@ -106,18 +106,6 @@ by an evaluation script that feeds it synthetic test cases instead of live PRs.
   anywhere in the diff, there's no search/grep tool to help it find where to look. That
   would be a genuinely different (bigger) feature -- a repo-wide code search tool, not
   just "let it read one more file."
-- **Occasional malformed structured output, not fully eliminated.** A diff containing
-  a string shaped like a live secret (e.g. `sk_live_...`) used to *reliably* make the
-  model emit stray `<parameter name="...">` tool-call syntax instead of valid JSON for
-  the `comments` field (3/3 failures). An explicit anti-leakage instruction in
-  `SYSTEM_PROMPT` fixed that specific case (5/5 clean after). But the same failure
-  shape resurfaced later, unprompted by secrets, during `read_file` loop testing
-  against a real PR -- nondeterministically (most runs clean, one wasn't). This looks
-  like a broader structured-output fragility in longer/more complex generations that
-  prompting alone hasn't eliminated, just made rarer for the specific case tested.
-  `review_pr()`'s `_validate_result()` fails soft on it (drops the malformed comments,
-  posts a generic notice) rather than crashing or posting garbled text -- a safety
-  net, not a fix.
 
 ## Evaluating review quality
 
