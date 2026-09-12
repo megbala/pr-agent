@@ -85,12 +85,34 @@ by an evaluation script that feeds it synthetic test cases instead of live PRs.
   gives a read-only `GITHUB_TOKEN` for PRs from forks, which would prevent posting
   comments on external contributions to this repo. Not an issue for the demo (PRs are
   opened within the same repo), but worth knowing for real-world use.
-- **No evaluation harness yet.** There's no labeled test set of "PRs with known
-  planted bugs" to measure recall/false-positive rate against — output quality is
-  currently judged by eye. This would be the first thing added with more time.
 - **The `read_file` tool exists in `github_client.py` but isn't wired into the agent
   loop yet.** Right now the agent only ever sees diff hunks, not full file content —
   a genuine limitation for changes where surrounding context matters.
+- **Cannot reliably flag hardcoded secrets.** `eval_harness.py`'s `hardcoded_secret`
+  case reproducibly fails: when a diff contains a string shaped like a live secret
+  (e.g. `sk_live_...`), the model garbles its own structured tool-call output instead
+  of returning well-formed JSON for the `comments` field. `review_pr()` now detects
+  this and fails soft (drops the malformed comments rather than crashing downstream),
+  but the practical effect is the same class of bug the system prompt explicitly asks
+  it to catch goes unreported. Not yet root-caused — worth a closer look (different
+  prompt phrasing? different tool schema? does it reproduce on other models?).
+
+## Evaluating review quality
+
+`local_test.py` only tells you the agent works on one hardcoded diff, and only if you
+read the output yourself. `eval_harness.py` runs it against a small fixed set of
+synthetic diffs — several with known planted bugs (SQL injection, unclosed file
+handle, division by zero, hardcoded secret, bare `except`), plus a couple of diffs
+that are genuinely bug-free — and scores how many planted bugs get caught vs. how many
+false positives show up on clean code:
+
+```
+python eval_harness.py
+```
+
+Current score: 4/5 planted bugs caught, 0/2 false positives on clean diffs (the one
+miss is the hardcoded-secrets issue above). Re-run this after any change to
+`prompts.py` or `review_agent.py` to check whether review quality moved.
 
 ## AI tools used
 

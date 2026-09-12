@@ -41,7 +41,25 @@ def review_pr(files: list[dict], client: anthropic.Anthropic | None = None) -> d
 
     for block in message.content:
         if block.type == "tool_use" and block.name == "submit_review":
-            return block.input  # already a plain dict matching the schema in prompts.py
+            return _validate_result(block.input)
 
     # Shouldn't happen with tool_choice forcing the call, but fail soft rather than crash.
     return {"summary": "Review agent did not return structured output.", "comments": []}
+
+
+def _validate_result(result: dict) -> dict:
+    """
+    Forced tool_choice guarantees the model calls submit_review, but not that every
+    field inside it actually matches the schema's declared types -- `comments` has been
+    observed coming back as a malformed string instead of a list (e.g. when the diff
+    contains something that looks like a live secret). Fail soft here rather than let a
+    bad shape crash main.py or github_client.py downstream with a confusing traceback.
+    """
+    summary = result.get("summary", "")
+    comments = result.get("comments", [])
+    if not isinstance(comments, list) or not all(isinstance(c, dict) for c in comments):
+        return {
+            "summary": summary or "Review agent returned malformed output; comments were dropped.",
+            "comments": [],
+        }
+    return {"summary": summary, "comments": comments}
