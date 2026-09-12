@@ -7,6 +7,7 @@ Deliberately has zero GitHub API calls in it. That means:
     synthetic test cases instead of live PR data -- no refactor needed.
 """
 
+import re
 from typing import Callable
 
 import anthropic
@@ -15,6 +16,17 @@ from prompts import SYSTEM_PROMPT, REVIEW_TOOL, READ_FILE_TOOL, build_diff_conte
 
 MODEL = "claude-sonnet-5"
 MAX_READ_FILE_CALLS = 4  # cap tool round-trips so a confused model can't loop forever
+
+# read_file can fetch ANY file in the repo (not just ones in the diff) -- these patterns
+# block obviously-sensitive paths as a partial safety net against a malicious diff trying
+# to use the review bot as an arbitrary-file-read/exfiltration primitive. This is NOT a
+# complete guarantee: a file with a generic name (e.g. config.py) that happens to contain
+# a secret isn't caught by a filename-based denylist.
+DENIED_PATH_PATTERNS = [
+    r"\.env(\..+)?$", r"\.pem$", r"\.key$", r"\.crt$",
+    r"secret", r"credential", r"\.git/", r"\.ssh/",
+    r"id_rsa", r"id_ed25519", r"\.npmrc$", r"\.netrc$",
+]
 
 
 def review_pr(
@@ -38,7 +50,6 @@ def review_pr(
     if not diff_context:
         return {"summary": "No reviewable text changes found in this PR.", "comments": []}
 
-    diff_paths = {f["filename"] for f in files}
     tools = [REVIEW_TOOL] + ([READ_FILE_TOOL] if read_file else [])
     messages = [
         {"role": "user", "content": f"Review this pull request diff:\n\n{diff_context}"},
@@ -73,21 +84,25 @@ def review_pr(
         messages.append({"role": "assistant", "content": message.content})
         messages.append({
             "role": "user",
-            "content": [_run_read_file(block, diff_paths, read_file) for block in reads],
+            "content": [_run_read_file(block, read_file) for block in reads],
         })
         reads_used += len(reads)
 
 
-def _run_read_file(block, diff_paths: set[str], read_file: Callable[[str], str]) -> dict:
+def _run_read_file(block, read_file: Callable[[str], str]) -> dict:
     path = block.input.get("path", "")
-    if path not in diff_paths:
-        content = f"Error: '{path}' is not a file in this PR's diff."
+    if _is_denied_path(path):
+        content = f"Error: reading '{path}' is not permitted (looks like a secret/credential path)."
     else:
         try:
             content = read_file(path)
         except Exception as e:
             content = f"Error reading '{path}': {e}"
     return {"type": "tool_result", "tool_use_id": block.id, "content": content}
+
+
+def _is_denied_path(path: str) -> bool:
+    return any(re.search(p, path, re.IGNORECASE) for p in DENIED_PATH_PATTERNS)
 
 
 def _validate_result(result: dict) -> dict:

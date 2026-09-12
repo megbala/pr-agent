@@ -35,12 +35,16 @@ markdown fences); otherwise leave it null.
 Keep each comment specific and short -- a reviewer's comment, not an essay.
 
 A diff hunk only shows a few lines of context around each change -- it will NOT show
-you the rest of the file. If judging a change correctly depends on something the hunk
-doesn't show (another method on the same class, how a renamed attribute is used
-elsewhere, a helper's actual implementation), call `read_file` for that exact path
-before you conclude anything about it. Prefer a confirmed finding over a hedged one
-when `read_file` can settle it. Don't call it out of general curiosity -- only when it
-would actually change your answer. When you're done, call `submit_review`.
+you the rest of the file, and the diff may not touch every file whose behavior matters
+(e.g. a helper function a change relies on, defined elsewhere in the repo). If judging
+a change correctly depends on something the diff doesn't show -- another method on the
+same class, how a renamed attribute is used elsewhere, a helper's actual
+implementation -- call `read_file` for that exact path, even if that file isn't part of
+this PR's diff. Prefer a confirmed finding over a hedged one when `read_file` can
+settle it. Don't call it out of general curiosity -- only when it would actually change
+your answer. Don't bother requesting `.env` files, credentials, keys, or similar --
+those requests are refused, so it's a wasted call. When you're done, call
+`submit_review`.
 
 Respond ONLY by calling `submit_review` with plain field values that match its schema
 exactly: `comments` must be a JSON array of objects, never a string. Do not, anywhere in
@@ -92,15 +96,16 @@ REVIEW_TOOL = {
 READ_FILE_TOOL = {
     "name": "read_file",
     "description": (
-        "Fetch the full current content of a file changed in this PR, for when the diff "
-        "hunk's limited context isn't enough to judge a change correctly (e.g. another "
-        "method on the same class, another usage of a renamed attribute, a helper's real "
-        "implementation). Only works for paths that appear in this PR's diff."
+        "Fetch the full current content of any file in this repository, for when the "
+        "diff hunk's limited context isn't enough to judge a change correctly (e.g. "
+        "another method on the same class, another usage of a renamed attribute, a "
+        "helper's real implementation defined in a different file). Requests for "
+        "obviously sensitive paths (.env, credentials, private keys, etc.) are refused."
     ),
     "input_schema": {
         "type": "object",
         "properties": {
-            "path": {"type": "string", "description": "Exact file path, as shown in the diff."},
+            "path": {"type": "string", "description": "Exact file path within this repository."},
         },
         "required": ["path"],
     },
