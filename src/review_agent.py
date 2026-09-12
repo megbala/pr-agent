@@ -16,6 +16,7 @@ from prompts import SYSTEM_PROMPT, REVIEW_TOOL, READ_FILE_TOOL, build_diff_conte
 
 MODEL = "claude-sonnet-5"
 MAX_READ_FILE_CALLS = 4  # cap tool round-trips so a confused model can't loop forever
+MAX_READ_FILE_CHARS = 50_000  # cap a single file's content injected into the conversation
 
 # read_file can fetch ANY file in the repo (not just ones in the diff) -- these patterns
 # block obviously-sensitive paths as a partial safety net against a malicious diff trying
@@ -42,13 +43,15 @@ def review_pr(
                at all and this behaves exactly like a single forced structured-output call.
 
     Returns a dict shaped like:
-        {"summary": str, "comments": [{"file", "line", "severity", "comment", "suggestion"}, ...]}
+        {"summary": str, "comments": [{"file", "line", "severity", "comment", "suggestion"}, ...],
+         "usage": {"input_tokens": int, "output_tokens": int, "api_calls": int}}
     """
     client = client or anthropic.Anthropic()  # reads ANTHROPIC_API_KEY from env by default
 
+    zero_usage = {"input_tokens": 0, "output_tokens": 0, "api_calls": 0}
     diff_context = build_diff_context(files)
     if not diff_context:
-        return {"summary": "No reviewable text changes found in this PR.", "comments": []}
+        return {"summary": "No reviewable text changes found in this PR.", "comments": [], "usage": zero_usage}
 
     tools = [REVIEW_TOOL] + ([READ_FILE_TOOL] if read_file else [])
     messages = [
@@ -56,6 +59,7 @@ def review_pr(
     ]
 
     reads_used = 0
+    usage = dict(zero_usage)
     while True:
         # Once the read_file budget is spent (or it was never offered), force the final
         # answer so this loop is guaranteed to terminate.
@@ -69,17 +73,22 @@ def review_pr(
             tool_choice={"type": "tool", "name": "submit_review"} if force_submit else {"type": "auto"},
             messages=messages,
         )
+        usage["input_tokens"] += message.usage.input_tokens
+        usage["output_tokens"] += message.usage.output_tokens
+        usage["api_calls"] += 1
 
         submit = next(
             (b for b in message.content if b.type == "tool_use" and b.name == "submit_review"), None
         )
         if submit:
-            return _validate_result(submit.input)
+            result = _validate_result(submit.input)
+            result["usage"] = usage
+            return result
 
         reads = [b for b in message.content if b.type == "tool_use" and b.name == "read_file"]
         if not reads:
             # Shouldn't happen with tool_choice forcing a call, but fail soft rather than crash.
-            return {"summary": "Review agent did not return structured output.", "comments": []}
+            return {"summary": "Review agent did not return structured output.", "comments": [], "usage": usage}
 
         messages.append({"role": "assistant", "content": message.content})
         messages.append({
@@ -96,6 +105,11 @@ def _run_read_file(block, read_file: Callable[[str], str]) -> dict:
     else:
         try:
             content = read_file(path)
+            if len(content) > MAX_READ_FILE_CHARS:
+                content = (
+                    content[:MAX_READ_FILE_CHARS]
+                    + f"\n\n... [truncated: file is {len(content)} chars, showing first {MAX_READ_FILE_CHARS}]"
+                )
         except Exception as e:
             content = f"Error reading '{path}': {e}"
     return {"type": "tool_result", "tool_use_id": block.id, "content": content}

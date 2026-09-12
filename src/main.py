@@ -35,7 +35,12 @@ def main() -> None:
     result = review_pr(files, read_file=read_file_at_head)
     summary = result.get("summary", "")
     comments = result.get("comments", [])
+    usage = result.get("usage", {})
     print(f"Agent produced {len(comments)} inline comment(s).")
+    print(
+        f"Usage: {usage.get('api_calls', '?')} API call(s), "
+        f"{usage.get('input_tokens', '?')} input / {usage.get('output_tokens', '?')} output tokens."
+    )
 
     if not summary and not comments:
         print("Nothing to post.")
