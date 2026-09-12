@@ -343,21 +343,26 @@ def run() -> None:
     total_caught = 0
     clean_cases = [c for c in CASES if c.should_be_clean]
     false_positive_cases = 0
+    total_usage = {"input_tokens": 0, "output_tokens": 0, "api_calls": 0}
 
     for case in CASES:
         read_file = _make_read_file(case.repo_files) if case.repo_files else None
         result = review_pr(case.files, read_file=read_file)
         comments = result.get("comments", [])
+        usage = result.get("usage", {"input_tokens": 0, "output_tokens": 0, "api_calls": 0})
+        for k in total_usage:
+            total_usage[k] += usage.get(k, 0)
+        usage_note = f"[{usage['api_calls']} call(s), {usage['input_tokens']}in/{usage['output_tokens']}out tok]"
 
         if case.should_be_clean:
             flagged = [c for c in comments if SEVERITY_RANK.get(c["severity"], 0) >= SEVERITY_RANK["warning"]]
             if flagged:
                 false_positive_cases += 1
-                print(f"[FAIL] {case.name} -- expected no bug/warning findings, got {len(flagged)}")
+                print(f"[FAIL] {case.name} -- expected no bug/warning findings, got {len(flagged)} {usage_note}")
                 for c in flagged:
                     print(f"    unexpected: [{c['severity']}] {c['file']}:{c['line']} -- {c['comment']}")
             else:
-                print(f"[PASS] {case.name}")
+                print(f"[PASS] {case.name} {usage_note}")
             continue
 
         for exp in case.expected:
@@ -365,11 +370,15 @@ def run() -> None:
             caught = any(_matches(c, exp) for c in comments)
             total_caught += caught
             status = "PASS" if caught else "FAIL (missed)"
-            print(f"[{status}] {case.name} -- expected '{exp.keyword}' near {exp.file}:{exp.line}")
+            print(f"[{status}] {case.name} -- expected '{exp.keyword}' near {exp.file}:{exp.line} {usage_note}")
 
     print("\n--- SUMMARY ---")
     print(f"Bugs caught:                      {total_caught}/{total_expected}")
     print(f"Clean diffs with false positives:  {false_positive_cases}/{len(clean_cases)}")
+    print(
+        f"Total usage:                      {total_usage['api_calls']} API call(s), "
+        f"{total_usage['input_tokens']} input / {total_usage['output_tokens']} output tokens"
+    )
 
 
 if __name__ == "__main__":
