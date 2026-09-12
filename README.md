@@ -16,8 +16,10 @@ GitHub Actions workflow triggers  (.github/workflows/pr-review.yml)
 src/main.py
   1. Reads the PR number from the Actions event payload
   2. Fetches the changed files + diffs via the GitHub API   (src/github_client.py)
-  3. Sends the diff to Claude with a review prompt, forcing structured
-     JSON-shaped output via a tool call                     (src/review_agent.py, src/prompts.py)
+  3. Sends the diff to Claude with a review prompt. Claude can optionally call a
+     read_file tool (capped at 4 calls) to see a full file beyond the diff hunk's
+     limited context, then finishes by calling a forced submit_review tool for
+     structured JSON output                                 (src/review_agent.py, src/prompts.py)
   4. Posts the result back as a single PR review: one summary comment
      + inline comments on specific lines                    (src/github_client.py)
 ```
@@ -72,6 +74,12 @@ by an evaluation script that feeds it synthetic test cases instead of live PRs.
   is always `COMMENT` — a human still makes the actual merge decision.
 - **The core review function takes no GitHub API calls.** Keeps it testable in
   isolation and reusable if an eval harness gets built later.
+- **`read_file` can only fetch files already in the PR's diff, not arbitrary repo
+  files.** A tool that let a PR's own diff content direct the agent to fetch and echo
+  back *any* file would be a prompt-injection risk (e.g. a malicious PR trying to get
+  `.env` or other secrets read back into a public comment). Restricting it to files
+  the PR already touches means it can only ever get *more* context on something
+  already visible, not go on a fishing expedition.
 
 ## Known limitations
 
@@ -85,36 +93,59 @@ by an evaluation script that feeds it synthetic test cases instead of live PRs.
   gives a read-only `GITHUB_TOKEN` for PRs from forks, which would prevent posting
   comments on external contributions to this repo. Not an issue for the demo (PRs are
   opened within the same repo), but worth knowing for real-world use.
-- **The `read_file` tool exists in `github_client.py` but isn't wired into the agent
-  loop yet.** Right now the agent only ever sees diff hunks, not full file content —
-  a genuine limitation for changes where surrounding context matters.
-- **(Fixed, see below) Malformed output on hardcoded-secret diffs.** `eval_harness.py`'s
-  `hardcoded_secret` case used to reproducibly fail: when a diff contained a string
-  shaped like a live secret (e.g. `sk_live_...`), the model would garble its own
-  structured tool-call output -- emitting stray `<parameter name="...">`-style syntax
-  inside the `comments` field instead of a well-formed JSON array. `review_pr()` still
-  validates the shape and fails soft as a safety net, but the actual fix was adding an
-  explicit instruction to `SYSTEM_PROMPT` telling the model never to emit tool-call/
-  parameter-tag syntax inside a field's value. 5/5 clean runs after that change, vs.
-  3/3 failures before it -- not conclusively root-caused (still not sure *why* secret-
-  shaped strings triggered it), but the fix held up under repeated testing.
+- **`read_file` is scoped to files already in the diff** (see Key decisions above) --
+  it can't fetch a genuinely separate file the PR never touched (e.g. a permissions
+  helper defined elsewhere). Extending that safely would need an allow/deny-list for
+  sensitive paths, not just "open it up."
+- **Occasional malformed structured output, not fully eliminated.** A diff containing
+  a string shaped like a live secret (e.g. `sk_live_...`) used to *reliably* make the
+  model emit stray `<parameter name="...">` tool-call syntax instead of valid JSON for
+  the `comments` field (3/3 failures). An explicit anti-leakage instruction in
+  `SYSTEM_PROMPT` fixed that specific case (5/5 clean after). But the same failure
+  shape resurfaced later, unprompted by secrets, during `read_file` loop testing
+  against a real PR -- nondeterministically (most runs clean, one wasn't). This looks
+  like a broader structured-output fragility in longer/more complex generations that
+  prompting alone hasn't eliminated, just made rarer for the specific case tested.
+  `review_pr()`'s `_validate_result()` fails soft on it (drops the malformed comments,
+  posts a generic notice) rather than crashing or posting garbled text -- a safety
+  net, not a fix.
 
 ## Evaluating review quality
 
 `local_test.py` only tells you the agent works on one hardcoded diff, and only if you
-read the output yourself. `eval_harness.py` runs it against a small fixed set of
-synthetic diffs — several with known planted bugs (SQL injection, unclosed file
-handle, division by zero, hardcoded secret, bare `except`), plus a couple of diffs
-that are genuinely bug-free — and scores how many planted bugs get caught vs. how many
-false positives show up on clean code:
+read the output yourself. `eval_harness.py` runs it against a fixed set of synthetic
+diffs and scores how many planted bugs get caught vs. how many false positives show up
+on clean code:
 
 ```
 python eval_harness.py
 ```
 
-Current score: 5/5 planted bugs caught, 0/2 false positives on clean diffs. Re-run this
-after any change to `prompts.py` or `review_agent.py` to check whether review quality
-moved.
+Cases range from obvious (SQL injection, unclosed file handle, division by zero,
+hardcoded secret, bare `except`) to deliberately hard -- requiring real reasoning
+rather than keyword-spotting: an N+1 query hidden in a loop, a mutable default
+argument, a cross-file argument-type mismatch, a silent output-format contract break,
+and a non-atomic race condition on a shared counter. Current score: **10/10 planted
+bugs caught, 0/2 false positives** on genuinely clean diffs. Re-run this after any
+change to `prompts.py` or `review_agent.py` to check whether review quality moved.
+
+## Demo: read_file against a real repo
+
+To validate `read_file` against something more convincing than a synthetic fixture, a
+one-line bug was planted in a fork of the real [tqdm](https://github.com/tqdm/tqdm)
+library: renaming `self.total` to `self.total_count` in `tqdm/std.py`'s `__init__`.
+The diff itself is a single innocent-looking line -- nothing about it looks wrong, and
+the several other places in the same file that still read `self.total`
+(`__bool__`, `__len__`, `format_dict`, `reset`) are all far outside the diff's visible
+context window.
+
+- **Without `read_file`:** the model hedges based on general (likely memorized, since
+  tqdm is a well-known public library) knowledge that `total` is a widely-used
+  attribute -- a reasonable but non-specific warning.
+- **With `read_file`:** the model fetches the full file, and returns a confirmed `bug`
+  naming the exact broken methods and why, with a suggested fix.
+
+Real PR, real GitHub API calls, real posted review: [megbala/tqdm#1](https://github.com/megbala/tqdm/pull/1).
 
 ## AI tools used
 

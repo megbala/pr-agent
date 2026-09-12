@@ -131,6 +131,122 @@ CASES = [
         expected=[Expected(file="app/worker.py", line=4, keyword="except", line_tolerance=3)],
     ),
     Case(
+        # A real production-shaped bug: batched fetch replaced by a per-item DB call
+        # inside a loop. Nothing is wrong line-by-line -- it only matters at scale, so
+        # this tests whether the model reasons about the shape of the code rather than
+        # spotting a suspicious keyword. Lower severity threshold since a performance
+        # regression is more likely to land as a "suggestion" than a "bug".
+        name="n_plus_one_query",
+        files=[{
+            "filename": "app/orders.py",
+            "status": "modified",
+            "patch": (
+                "@@ -1,5 +1,6 @@\n"
+                " def get_order_totals(orders):\n"
+                "-    customer_ids = [o.customer_id for o in orders]\n"
+                "-    customers = db.get_customers_by_ids(customer_ids)\n"
+                "-    customer_map = {c.id: c for c in customers}\n"
+                "-    return [(o, customer_map[o.customer_id]) for o in orders]\n"
+                "+    results = []\n"
+                "+    for order in orders:\n"
+                "+        customer = db.get_customer(order.customer_id)\n"
+                "+        results.append((order, customer))\n"
+                "+    return results\n"
+            ),
+        }],
+        expected=[Expected(file="app/orders.py", line=4, keyword="n+1", min_severity="suggestion", line_tolerance=2)],
+    ),
+    Case(
+        # Classic Python gotcha: a mutable default argument is created once at function
+        # definition time and silently shared/leaked across every call. Deterministic
+        # and well-defined, but requires actually understanding Python semantics rather
+        # than pattern-matching a named vulnerability.
+        name="mutable_default_argument",
+        files=[{
+            "filename": "app/cache.py",
+            "status": "modified",
+            "patch": (
+                "@@ -1,1 +1,5 @@\n"
+                " import time\n"
+                "+\n"
+                "+def add_to_cache(key, value, _cache={}):\n"
+                "+    _cache[key] = (value, time.time())\n"
+                "+    return _cache\n"
+            ),
+        }],
+        expected=[Expected(file="app/cache.py", line=3, keyword="default")],
+    ),
+    Case(
+        # The bug is only fully verifiable by reading a SECOND file this diff doesn't
+        # touch: user_can_access() (defined in permissions.py, not shown here) expects
+        # a resource with an .owner_id attribute, but the caller now passes doc.owner
+        # (a user object) instead of doc itself. Turns out the model doesn't need
+        # read_file to get suspicious -- it correctly hedges ("unless user_can_access
+        # was specifically refactored to take an owner, this could introduce a
+        # permission bypass") from the argument-type change alone. What it can't do
+        # without read_file is turn that hedge into a confirmed answer -- that's the
+        # actual motivation for wiring it up, not blindness to the issue existing.
+        name="cross_file_ownership_type_mismatch",
+        files=[{
+            "filename": "app/views.py",
+            "status": "modified",
+            "patch": (
+                "@@ -1,7 +1,7 @@\n"
+                " from permissions import user_can_access\n"
+                " \n"
+                " def get_document(request, doc_id):\n"
+                "     doc = Document.objects.get(id=doc_id)\n"
+                "-    if not user_can_access(request.user, doc):\n"
+                "+    if not user_can_access(request.user, doc.owner):\n"
+                "         raise PermissionDenied()\n"
+                "     return doc\n"
+            ),
+        }],
+        expected=[Expected(file="app/views.py", line=5, keyword="owner", line_tolerance=2)],
+    ),
+    Case(
+        # Unlike cross_file_ownership_type_mismatch, there is NO visible red flag in
+        # this diff -- swapping a manual date format for the standard isoformat() looks
+        # like a strict improvement, arguably even better practice. The break only
+        # exists because some other file (not shown, not even referenced by name here)
+        # parses the old fixed-width output by slicing/regex. Nothing about this diff
+        # should make a reviewer suspicious on its own -- a genuinely hard case for a
+        # diff-only reviewer, expected to be MISSED today.
+        name="silent_format_contract_break",
+        files=[{
+            "filename": "app/formatting.py",
+            "status": "modified",
+            "patch": (
+                "@@ -1,3 +1,3 @@\n"
+                " def format_timestamp(dt):\n"
+                "-    return dt.strftime('%Y-%m-%d')\n"
+                "+    return dt.isoformat()\n"
+            ),
+        }],
+        expected=[Expected(file="app/formatting.py", line=2, keyword="format", line_tolerance=1)],
+    ),
+    Case(
+        # A non-atomic check-then-act on a shared counter: read, compute, write as three
+        # separate steps instead of one atomic INCR. Under concurrent requests, two
+        # increments can read the same starting value and one gets lost. Nothing here is
+        # syntactically wrong -- it requires reasoning about interleaved execution across
+        # multiple callers, not reading code as a single linear sequence.
+        name="race_condition_non_atomic_increment",
+        files=[{
+            "filename": "app/rate_limiter.py",
+            "status": "modified",
+            "patch": (
+                "@@ -1,4 +1,5 @@\n"
+                " def increment_request_count(redis_client, key):\n"
+                "-    return redis_client.incr(key)\n"
+                "+    current = redis_client.get(key) or 0\n"
+                "+    redis_client.set(key, int(current) + 1)\n"
+                "+    return int(current) + 1\n"
+            ),
+        }],
+        expected=[Expected(file="app/rate_limiter.py", line=3, keyword="race", line_tolerance=2)],
+    ),
+    Case(
         # A pure local-variable rename inside a function body -- no public API change,
         # no behavior change. (An earlier version of this case renamed the function
         # itself, which the agent correctly flagged as a breaking-API-change concern --
