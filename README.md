@@ -83,6 +83,10 @@ by an evaluation script that feeds it synthetic test cases instead of live PRs.
   malicious diff using the agent as an arbitrary-file-read/exfiltration primitive.
   This is a partial safety net, not a complete one: a file with an innocuous name that
   happens to contain a secret isn't caught by a filename-based deny-list.
+- **`read_file` content is capped at `MAX_READ_FILE_CHARS` (50,000 characters).** A
+  huge, generated, or vendored file would otherwise dump an enormous, expensive blob
+  into the conversation; fetching one now returns a truncated version with a clear
+  `[truncated: ...]` marker instead.
 
 ## Known limitations
 
@@ -138,6 +142,14 @@ non-LLM check of the `read_file` deny-list itself (no API calls). Current score:
 **10/10 planted bugs caught, 0/2 false positives** on genuinely clean diffs. Re-run
 this after any change to `prompts.py` or `review_agent.py` to check whether review
 quality moved.
+
+Every case also reports token usage (`review_pr()`'s return value includes a `usage`
+key: `input_tokens`, `output_tokens`, `api_calls`, summed across every API call made
+within that review, including `read_file` round trips). This makes the actual cost of
+`read_file` visible instead of assumed: the one case that exercises it
+(`cross_file_ownership_type_mismatch`) costs 2 API calls and ~4,050 input tokens,
+vs. 1 call and ~1,850-1,950 input tokens for every single-shot case -- roughly double,
+for a hedge-to-confirmed upgrade in that specific case.
 
 ## Demo: read_file against a real repo
 

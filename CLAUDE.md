@@ -59,7 +59,8 @@ inline comments).
 3. ~~Decide on read_file wiring.~~ Done — built, tested, validated against a real fork.
 4. ~~Decide whether to extend read_file beyond diff-only files.~~ Done — switched to a
    deny-list policy, see above.
-5. Comment deduplication across repeated pushes — still open, not started.
+5. ~~Add token/cost tracking; add a size guard on read_file.~~ Done, see below.
+6. Comment deduplication across repeated pushes — still open, not started.
 
 ## Not yet built (flag these, don't just build them unprompted)
 - Comment deduplication across repeated pushes to the same PR — not yet built,
@@ -69,11 +70,21 @@ inline comments).
   codebase with no obvious import/reference pointing at it). Would need a repo-wide
   code search tool, a genuinely bigger feature than "read one more file" — flagged as
   an open idea, not started.
-- Token/cost tracking not yet added to `eval_harness.py` -- no visibility into how much
-  more a read_file-enabled review costs vs. a single-call one. Discussed, not started.
-- No size guard on `read_file` -- `github_client.read_file()` returns a file's full
-  content unconditionally; a very large file would dump a lot of tokens into the
-  conversation. Discussed, not started.
+
+## Token usage tracking and read_file size cap (done)
+`review_pr()` now returns a third key, `usage: {input_tokens, output_tokens,
+api_calls}`, accumulated across every API call made within a single review (including
+read_file round trips). `main.py` logs it; `eval_harness.py` prints it per case and
+totals it. Confirmed it shows the real cost of read_file: `cross_file_ownership_type_mismatch`
+(the one case that exercises read_file) used 2 API calls / ~4054 input tokens, vs. 1
+call / ~1850-1950 input tokens for every single-shot case -- roughly 2x cost for that
+round trip, now measured rather than assumed.
+
+Separately, `_run_read_file()` in `review_agent.py` now caps file content at
+`MAX_READ_FILE_CHARS = 50_000` chars, truncating with a clear `[truncated: ...]` marker
+if a fetched file exceeds it. Verified with a 120,000-char synthetic file -- correctly
+truncated to the cap plus the marker. Prevents a single huge/generated/vendored file
+from dumping an enormous, expensive blob into the conversation.
 
 ## Known model bug found via eval_harness.py (mitigated, not eliminated)
 When a diff contained a string shaped like a live secret (e.g. `sk_live_...`), the
