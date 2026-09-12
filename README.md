@@ -88,14 +88,16 @@ by an evaluation script that feeds it synthetic test cases instead of live PRs.
 - **The `read_file` tool exists in `github_client.py` but isn't wired into the agent
   loop yet.** Right now the agent only ever sees diff hunks, not full file content —
   a genuine limitation for changes where surrounding context matters.
-- **Cannot reliably flag hardcoded secrets.** `eval_harness.py`'s `hardcoded_secret`
-  case reproducibly fails: when a diff contains a string shaped like a live secret
-  (e.g. `sk_live_...`), the model garbles its own structured tool-call output instead
-  of returning well-formed JSON for the `comments` field. `review_pr()` now detects
-  this and fails soft (drops the malformed comments rather than crashing downstream),
-  but the practical effect is the same class of bug the system prompt explicitly asks
-  it to catch goes unreported. Not yet root-caused — worth a closer look (different
-  prompt phrasing? different tool schema? does it reproduce on other models?).
+- **(Fixed, see below) Malformed output on hardcoded-secret diffs.** `eval_harness.py`'s
+  `hardcoded_secret` case used to reproducibly fail: when a diff contained a string
+  shaped like a live secret (e.g. `sk_live_...`), the model would garble its own
+  structured tool-call output -- emitting stray `<parameter name="...">`-style syntax
+  inside the `comments` field instead of a well-formed JSON array. `review_pr()` still
+  validates the shape and fails soft as a safety net, but the actual fix was adding an
+  explicit instruction to `SYSTEM_PROMPT` telling the model never to emit tool-call/
+  parameter-tag syntax inside a field's value. 5/5 clean runs after that change, vs.
+  3/3 failures before it -- not conclusively root-caused (still not sure *why* secret-
+  shaped strings triggered it), but the fix held up under repeated testing.
 
 ## Evaluating review quality
 
@@ -110,9 +112,9 @@ false positives show up on clean code:
 python eval_harness.py
 ```
 
-Current score: 4/5 planted bugs caught, 0/2 false positives on clean diffs (the one
-miss is the hardcoded-secrets issue above). Re-run this after any change to
-`prompts.py` or `review_agent.py` to check whether review quality moved.
+Current score: 5/5 planted bugs caught, 0/2 false positives on clean diffs. Re-run this
+after any change to `prompts.py` or `review_agent.py` to check whether review quality
+moved.
 
 ## AI tools used
 

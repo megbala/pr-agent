@@ -25,9 +25,10 @@ inline comments).
   opened, workflow ran end-to-end successfully, agent correctly flagged both planted
   bugs with valid suggestions, PR merged — `demo/stats.py` now lives in `main` as a
   reusable fixture for future demos.
-- `eval_harness.py` built and run: 4/5 planted bugs caught, 0/2 false positives on
-  clean diffs. The one miss surfaced a real, reproducible model bug (see below) —
-  `review_pr()` was patched to fail soft on it rather than crash downstream.
+- `eval_harness.py` built and run: 5/5 planted bugs caught, 0/2 false positives on
+  clean diffs. One case (hardcoded_secret) surfaced a real, reproducible model bug
+  (see below), now fixed via a prompt change; `review_pr()` also still validates the
+  output shape and fails soft as a safety net.
 
 ## Next steps, in order — validate each before moving to the next
 1. ~~`pip install -r requirements.txt`, then `python local_test.py`.~~ Done.
@@ -42,13 +43,17 @@ inline comments).
 - Comment deduplication across repeated pushes to the same PR — not yet built,
   discussed as a possible next step, not yet started.
 
-## Known model bug found via eval_harness.py
-When a diff contains a string shaped like a live secret (e.g. `sk_live_...`), the
-model reliably returns malformed JSON for the `comments` field instead of a proper
-array — even under forced `tool_choice`. Not root-caused yet. `review_pr()` now
-validates the shape and fails soft, but the practical effect is the agent currently
-can't flag hardcoded secrets, despite the system prompt asking it to. See README's
-Known limitations.
+## Known model bug found via eval_harness.py (fixed)
+When a diff contained a string shaped like a live secret (e.g. `sk_live_...`), the
+model reliably returned malformed JSON for the `comments` field (stray
+`<parameter name="...">` syntax) instead of a proper array — even under forced
+`tool_choice`. Fixed by adding an explicit instruction to `SYSTEM_PROMPT`
+(`src/prompts.py`) telling the model never to emit tool-call/parameter-tag syntax
+inside a field's value. 5/5 clean runs after the change vs. 3/3 failures before —
+not conclusively root-caused (why secret-shaped strings specifically triggered this
+is still unclear), but the fix has held up under repeated testing. `review_pr()`
+still validates the output shape and fails soft as a defense-in-depth safety net.
+See README's Known limitations for more detail.
 
 ## Known limitations (already documented in README — keep it updated as more surface)
 No incremental review (re-reviews whole diff every push), no comment dedup, no

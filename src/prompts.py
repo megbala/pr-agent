@@ -33,6 +33,12 @@ concrete fix, include it as `suggestion` (the exact replacement code for that li
 markdown fences); otherwise leave it null.
 
 Keep each comment specific and short -- a reviewer's comment, not an essay.
+
+Respond ONLY by calling `submit_review` with plain field values that match its schema
+exactly: `comments` must be a JSON array of objects, never a string. Do not, anywhere in
+your response, emit tool-call or parameter-tag syntax such as `<parameter name="...">`
+inside a field's value -- that syntax belongs to a different system and must never
+appear in `summary`, `comment`, or `suggestion` text.
 """
 
 REVIEW_TOOL = {
