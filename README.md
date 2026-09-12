@@ -96,10 +96,6 @@ by an evaluation script that feeds it synthetic test cases instead of live PRs.
   across multiple review runs.
 - **Large diffs aren't chunked.** A very large PR could exceed reasonable prompt size;
   there's no splitting logic yet.
-- **Fork PRs are untested.** `pull_request` (as opposed to `pull_request_target`)
-  gives a read-only `GITHUB_TOKEN` for PRs from forks, which would prevent posting
-  comments on external contributions to this repo. Not an issue for the demo (PRs are
-  opened within the same repo), but worth knowing for real-world use.
 - **`read_file` has no way to *discover* a relevant file it doesn't already know the
   name of.** It can fetch any path once named (e.g. from an import statement in the
   diff), but in a large codebase where the relevant file isn't obviously named
